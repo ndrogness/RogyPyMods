@@ -1,11 +1,9 @@
-#!/usr/bin/env python3
-
-from PCF8574 import PCF8574_GPIO
-from Adafruit_LCD1602 import Adafruit_CharLCD
-
 class LCD1602:
 
     def __init__(self, i2c_address=0x27, initial_msg='Rogy Display'):
+
+        from PCF8574 import PCF8574_GPIO
+        from Adafruit_LCD1602 import Adafruit_CharLCD
 
         self.mcp = PCF8574_GPIO(i2c_address)
 
