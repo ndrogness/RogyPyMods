@@ -2,12 +2,12 @@
 
 import sys
 import os
+import random
 import alsaaudio as aa
 import wave
 from struct import unpack
 import numpy as np
 
-##################################################################
 # Global Defines
 
 # Maximum Signal intensity
@@ -15,7 +15,7 @@ MAX_SIGNAL_LEVEL = 8
 
 # Default Frequencies & Weights for FFT analysis
 DEFAULT_FREQUENCIES = [80, 150, 310, 450, 800, 2500, 5000, 10000]
-DEFAULT_FREQ_WEIGHT = [2, 4, 8, 8, 16, 16, 32, 64]
+DEFAULT_FREQ_WEIGHT = [2,    4,   8,   8,  16,   16,   32,    64]
 
 # High Fidelity Info
 SubBass = {'name': 'SubBass',
@@ -27,6 +27,7 @@ SubBass = {'name': 'SubBass',
            'num_freqs_to_include': 0,
            'freqs': [60]
            }
+
 
 Bass = {'name': 'Bass',
         'freq_low': 61,
@@ -56,7 +57,7 @@ Midrange = {'name': 'Midrange',
             'weight': 8,
             'num_freqs_to_include': 2,
             'freqs': [500, 1000]
-            # 'freqs': [500]
+            #'freqs': [500]
             }
 
 UpperMidrange = {'name': 'UpperMidrange',
@@ -65,9 +66,9 @@ UpperMidrange = {'name': 'UpperMidrange',
                  'freq_sweetspot': 2500,
                  'step_size': 250,
                  'weight': 32,
-                 'num_freqs_to_include': 0,
+                 'num_freqs_to_include': 2,
                  'freqs': [2500, 3500]
-                 # 'freqs': [2000]
+                 #'freqs': [2000]
                  }
 
 Presence = {'name': 'Presence',
@@ -93,16 +94,20 @@ Brilliance = {'name': 'Brilliance',
 HiFi_ascending = [SubBass, Bass, LowMidrange, Midrange, UpperMidrange, Presence, Brilliance]
 
 
-##################################################################
 class AudioFile:
+    '''
+    AudioFile Helper class
+    '''
 
-    def __init__(self, afile, type='WAV', achunk=4096):
+    def __init__(self, afile, type='WAV', achunk=4096, use_alsa=True):
+
         if not os.path.exists(afile):
             print("Audio File: ", afile, "not found!")
-            # return()
+            return
 
         self.filename = afile
         self.chunk_size = achunk
+        self.use_alsa = use_alsa
         self.chunk_levels = [0, 0, 0, 0, 0, 0, 0, 0]
         self.IsPlaying = False
 
@@ -114,11 +119,21 @@ class AudioFile:
         self.nframes = self.wave_file.getnframes()
 
         # prepare audio for output
-        self.audio_output = aa.PCM(aa.PCM_PLAYBACK, aa.PCM_NORMAL)
-        self.audio_output.setchannels(self.nchannels)
-        self.audio_output.setrate(self.frame_rate)
-        self.audio_output.setformat(aa.PCM_FORMAT_S16_LE)
-        self.audio_output.setperiodsize(achunk)
+
+        # Use ALSA setup
+        if self.use_alsa is True:
+            self.audio_output = aa.PCM(aa.PCM_PLAYBACK, aa.PCM_NORMAL)
+            self.audio_output.setchannels(self.nchannels)
+            self.audio_output.setrate(self.frame_rate)
+            self.audio_output.setformat(aa.PCM_FORMAT_S16_LE)
+            self.audio_output.setperiodsize(achunk)
+        else:
+            # Use Pyaudio vs Alsa(the pyaudio streamer is not good for this, but needed for Bluetooth audio..Ugh)
+            import pyaudio
+            self.pa = pyaudio.PyAudio()
+            # open stream
+            self.audio_output = self.pa.open(format=self.pa.get_format_from_width(self.sample_width),
+                                             channels=self.nchannels, rate=self.frame_rate, output=True)
 
     def read_chunk(self):
         _wdata = self.wave_file.readframes(self.chunk_size)
@@ -131,18 +146,29 @@ class AudioFile:
         return _wdata
 
     def write_chunk(self, adata):
-        self.audio_output.write(adata)
+        try:
+            self.audio_output.write(adata)
+        except:
+            print("Error playing Audio IO Error in stream write")
+            return False
+        return True
 
     def stop(self):
-        self.audio_output.close()
+
+        if self.use_alsa is True:
+            self.audio_output.close()
+        else:
+            self.audio_output.stop_stream()
+            self.audio_output.close()
+            self.pa.terminate()
+
         self.wave_file.close()
 
 
-# End AudioFile Class
-##################################################################
-
-##################################################################
 class Signals:
+    '''
+    Signals class
+    '''
 
     def __init__(self, stype="hifi", frequencies=DEFAULT_FREQUENCIES, weights=DEFAULT_FREQ_WEIGHT):
 
@@ -170,12 +196,46 @@ class Signals:
                 self.weights.append(get_hifi_name_from_freq(self.frequencies[i]))
 
 
-# End Signals Class
-##################################################################
+def build_playlist(songs_dir, randomize=True, debug=False):
+    '''
+    Build a playlist from the songs directory
+    :param songs_dir: Directory of wavefile songs
+    :param randomize: Randomize the list of songs
+    :param debug: print debugging
+    :return: list of songs to process
+    '''
+
+    songs = []
+
+    # Check to make sure we have a songs directory
+    if not os.path.exists(songs_dir):
+        print('WARNING: No songs directory:', songs_dir)
+        return songs
+
+    # Loop through songs dir to generate list of songs
+    for dfile in os.listdir(songs_dir):
+        pfile = "%s/%s" % (songs_dir, dfile)
+        if os.path.isfile(pfile):
+            songs.append(pfile)
+            if debug is True:
+                print('Found valid song to add to playlist:', pfile)
+
+    if randomize is True:
+        random.shuffle(songs)
+
+    if debug is True:
+        print('Final playlist:', songs)
+
+    return songs
 
 
-#############################################################################################
 def get_hifi_name_from_freq(frequency):
+    '''
+    Return the friendly HiFi name based on a frequency
+    :param frequency: integer of frequency in Hz
+    :return: Text of name
+    '''
+
     # print("Freq:",frequency)
     for i in range(0, len(HiFi_ascending)):
 
@@ -186,12 +246,13 @@ def get_hifi_name_from_freq(frequency):
     return "UNKNOWN"
 
 
-# End get_hifi_name_from_freq
-##################################################################
-
-
-#############################################################################################
 def get_hifi_weight_from_freq(frequency):
+    '''
+    Get the corresponding weight to apply to the signal analysis based on frequency
+    :param frequency: integer of frequency in Hz
+    :return: integer of weight to apply
+    '''
+
     for i in range(0, len(HiFi_ascending)):
 
         if frequency >= HiFi_ascending[i]['freq_low'] and frequency <= HiFi_ascending[i]['freq_high']:
@@ -200,12 +261,12 @@ def get_hifi_weight_from_freq(frequency):
     return 0
 
 
-# End get_hifi_name_from_freq
-##################################################################
-
-
-#############################################################################################
 def build_freqs_from_hifi():
+    '''
+    Return a list of frequencies based on standard HiFi
+    :return: a list of hifi frequencies
+    '''
+
     hifi_frequencies = []
     for i in range(0, len(HiFi_ascending)):
 
@@ -215,11 +276,12 @@ def build_freqs_from_hifi():
     return hifi_frequencies
 
 
-# End build_freqs_from_hifi
-##################################################################
-
-#############################################################################################
 def build_weights_from_hifi():
+    '''
+    Build the weights for each HiFi frequency
+    :return: a list of weights
+    '''
+
     hifi_weights = []
     for i in range(0, len(HiFi_ascending)):
 
@@ -229,12 +291,17 @@ def build_weights_from_hifi():
     return hifi_weights
 
 
-# End build_freqs_from_hifi
-##################################################################
-
-
-#############################################################################################
 def freq_hifi_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, MaxFreqs=8):
+    '''
+    Experimental - Automatically build the HiFi frequencies from an audio file
+    :param filename:
+    :param freqs:
+    :param weights:
+    :param ChunkSize:
+    :param MaxFreqs:
+    :return:
+    '''
+
     DataFFT = []
 
     # possible_freqs
@@ -247,14 +314,13 @@ def freq_hifi_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, Max
                                                                   HiFi_ascending[i]['step_size'],
                                                                   HiFi_ascending[i]['freq_high'])
 
-        HiFi_weights[HiFi_ascending[i]['name']] = [HiFi_ascending[i]['weight'] for x in
-                                                   range(0, len(HiFi_freqs[HiFi_ascending[i]['name']]))]
+        HiFi_weights[HiFi_ascending[i]['name']] = [HiFi_ascending[i]['weight'] for x in range(0, len(HiFi_freqs[HiFi_ascending[i]['name']]))]
 
-        HiFi_counts[HiFi_ascending[i]['name']] = [int(0) for x in range(0, len(HiFi_freqs[HiFi_ascending[i]['name']]))]
+        HiFi_counts[HiFi_ascending[i]['name']] = [int(0) for x in range(0,len(HiFi_freqs[HiFi_ascending[i]['name']]))]
 
         # print(HiFi_freqs[HiFi_ascending[i]['name']])
         # print(HiFi_weights[HiFi_ascending[i]['name']])
-
+  
     wavfile = wave.open(filename, 'r')
     sample_rate = wavfile.getframerate()
 
@@ -275,6 +341,7 @@ def freq_hifi_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, Max
 
     wavfile.close()
 
+
     final_freq_counter = 0
     for j in range(0, len(HiFi_ascending)):
         name = HiFi_ascending[j]['name']
@@ -293,11 +360,17 @@ def freq_hifi_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, Max
                     final_freq_counter += 1
 
 
-#### End freq_hifi_auto_build_from_file
-##########################################################################
-
-##########################################################################
 def freq_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, MaxFreqs=8):
+    '''
+    Experimental - Attempt to build the key frequencies from an audio file
+    :param filename: name of file
+    :param freqs:
+    :param weights:
+    :param ChunkSize:
+    :param MaxFreqs:
+    :return:
+    '''
+
     possible_freqs = build_freq_matrix(100, 100, 20000)
     print(possible_freqs)
 
@@ -308,7 +381,7 @@ def freq_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, MaxFreqs
 
     possible_weights = [int(1) for i in range(0, NumPossibleFreqs)]
     DataFFT = []
-    defaultweighting = [[0, 1], [150, 2], [625, 8], [2500, 16], [5000, 32], [10000, 64]]
+    defaultweighting = [[0,1], [150,2], [625,8], [2500,16], [5000,32], [10000,64]]
 
     for i in range(0, NumPossibleFreqs):
 
@@ -317,10 +390,10 @@ def freq_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, MaxFreqs
                 possible_weights[i] = defaultweighting[j][1]
 
         if possible_weights[i] < 2:
-            possible_weights[i] = 2
+            possible_weights[i]=2
 
     # print ("Freq:",possible_freqs[i],"Weight:",possible_weights[i])
-
+      
     wavfile = wave.open(filename, 'r')
     sample_rate = wavfile.getframerate()
 
@@ -346,59 +419,70 @@ def freq_auto_build_from_file(filename, freqs, weights, ChunkSize=4096, MaxFreqs
     print("Sorting List:")
     freqs_counts = possible_freqs_count
     freqs_counts.sort(reverse=True)
-
+  
     print(freqs_counts)
 
     Counts = freqs_counts[0:MaxFreqs]
     print(Counts)
 
     for j in range(0, len(Counts)):
-        freqs[j] = possible_freqs[FreqCount[Counts[j]]]
+        freqs[j] = possible_freqs[ FreqCount[Counts[j]] ]
         print("Final Frequency:", freqs[j], "with count:", Counts[j])
 
 
-# print("Final Freqs:",freqs)
+  # print("Final Freqs:",freqs)
 
-# End freq_auto_build_from_file
-# ########################################################################
 
-##########################################################################
 def build_freq_matrix(start_freq=50, step_size=50, end_freq=20000):
+    '''
+    Build a frequency matrix based on a range of frequencies from start to end
+    :param start_freq: int of start freq in Hz
+    :param step_size: int step
+    :param end_freq: int of end freq in Hz
+    :return:
+    '''
+
     if start_freq < 20:
         start_freq = 20
 
-    stop = int(round((end_freq - start_freq) / step_size))
+    stop = int(round((end_freq-start_freq)/step_size))
     # print ("Stop:",stop)
-    return [start_freq + (step_size * x) for x in range(0, stop)]
+    return [start_freq+(step_size*x) for x in range(0, stop)]
 
 
-#### End build_freq_matrix
-##########################################################################
-
-##########################################################################
 def calculate_levels(data, chunk, sample_rate, freqs, weighting):
+    '''
+    Perform FFT analysis on wave file chunk
+    :param data: a list of wave file signal data to be analized
+    :param chunk: chunk size
+    :param sample_rate: sample rate of wave file
+    :param freqs: frequencies of interest
+    :param weighting: weighting to apply to the frequencies
+    :return: a list of scaled signal levels
+    '''
+
     signal_levels = [int(0) for i in range(0, len(freqs))]
 
     power = []
 
     # Convert raw data (ASCII string) to numpy array
-    data = unpack("%dh" % (len(data) / 2), data)
+    data = unpack("%dh" % (len(data)/2), data)
     data = np.array(data, dtype='h')
 
     # Apply FFT - real data
     fourier = np.fft.rfft(data)
 
     # Remove last element in array to make it the same size as chunk
-    fourier = np.delete(fourier, len(fourier) - 1)
+    fourier = np.delete(fourier, len(fourier)-1)
 
     # Find average 'amplitude' for specific frequency ranges in Hz
     power = np.abs(fourier)
-
+ 
     # Loop through freqs
-    v1 = int(2 * chunk * 0 / sample_rate)
+    v1 = int(2*chunk*0/sample_rate)
 
     for i in range(0, len(freqs)):
-        v2 = int(2 * chunk * freqs[i] / sample_rate)
+        v2 = int(2*chunk*freqs[i]/sample_rate)
         # print (v1,v2)
         try:
             signal_levels[i] = int((np.mean(power[v1:v2:1]) * weighting[i]) / 1000000)
@@ -415,13 +499,15 @@ def calculate_levels(data, chunk, sample_rate, freqs, weighting):
     return signal_levels
 
 
-#### End calculate_levels
-##########################################################################
-
-##########################################################################
 def print_levels(level_data):
+    '''
+    Helper function to Print out the signal data (like a spectrum analyzer)
+    :param level_data:
+    :return:
+    '''
+
     os.system("clear")
-    for i in range(1, MAX_SIGNAL_LEVEL + 1):
+    for i in range(1, MAX_SIGNAL_LEVEL+1):
         row = (MAX_SIGNAL_LEVEL + 1) - i
 
         for j in range(0, len(level_data)):
@@ -439,6 +525,4 @@ def print_levels(level_data):
 
     print("")
 
-#### End print_levels
-##########################################################################
 
